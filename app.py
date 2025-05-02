@@ -3,7 +3,6 @@ import psycopg2
 from flask import Flask, jsonify, request
 from dotenv import load_dotenv
 
-# Загружаем переменные из .env, только в локальной среде
 if os.environ.get("RAILWAY_ENVIRONMENT") is None:
     load_dotenv()
 
@@ -91,6 +90,103 @@ def get_languages():
         ]
         return jsonify(data), 200
 
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/orders', methods=['POST'])
+def create_order():
+    data = request.get_json()
+    
+    if not data or 'customer_id' not in data or 'items' not in data:
+        return jsonify({"error": "Missing data"}), 400
+    
+    customer_id = data['customer_id']
+    items = data['items']
+
+    if not items or not isinstance(items, list):
+        return jsonify({"error": "Items list is required"}), 400
+    
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "INSERT INTO orders (customer_id, invoice_date) VALUES (%s, CURRENT_TIMESTAMP) RETURNING order_id;",
+            (customer_id,)
+        )
+        order_id = cursor.fetchone()[0]
+        
+        for item in items:
+            product_id = item.get('product_id')
+            quantity = item.get('quantity')
+            price = item.get('price')
+            
+            if not all([product_id, quantity, price]):
+                continue
+
+            cursor.execute(
+                "INSERT INTO order_items (order_id, product_id, quantity, price) VALUES (%s, %s, %s, %s);",
+                (order_id, product_id, quantity, price)
+            )
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({"message": "Order created successfully", "order_id": order_id}), 201
+    
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/orders', methods=['GET'])
+def get_orders():
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT o.order_id, o.customer_id, o.invoice_date, 
+                   oi.order_item_id, oi.product_id, oi.quantity, oi.price,
+                   pn.name as product_name
+            FROM orders o
+            LEFT JOIN order_items oi ON o.order_id = oi.order_id
+            LEFT JOIN product_names pn ON oi.product_id = pn.product_id AND pn.lang_id = 'ua';
+        """)
+        
+        orders = cursor.fetchall()
+        
+        if orders:
+            orders_list = []
+            current_order = None
+            for order in orders:
+                order_id, customer_id, invoice_date, order_item_id, product_id, quantity, price, product_name = order
+                if current_order != order_id:
+                    if current_order is not None:
+                        orders_list.append(current_order_data)
+                    current_order_data = {
+                        "order_id": order_id,
+                        "customer_id": customer_id,
+                        "invoice_date": invoice_date,
+                        "items": []
+                    }
+                    current_order = order_id
+                
+                current_order_data["items"].append({
+                    "order_item_id": order_item_id,
+                    "product_id": product_id,
+                    "product_name": product_name,
+                    "quantity": quantity,
+                    "price": price
+                })
+            
+            orders_list.append(current_order_data)
+            cursor.close()
+            conn.close()
+            return jsonify({"orders": orders_list}), 200
+        else:
+            cursor.close()
+            conn.close()
+            return jsonify({"message": "No orders found"}), 404
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
