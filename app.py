@@ -9,15 +9,22 @@ if os.environ.get("RAILWAY_ENVIRONMENT") is None:
 
 app = Flask(__name__)
 
+# функция коннекта в БД, вызывается из каждого роута, где надо обращаться к базе
 def get_db_connection():
     db_url = os.getenv("DATABASE_URL")   # Читаем URL базы из переменной окружения
     if not db_url:
         raise RuntimeError("DATABASE_URL не задана.")
     return psycopg2.connect(db_url)
 
+# Когда ты стучишься к аппке GET-запросом по адресу https://<аппка>/products
+# то вызывается функция, которая описана непосредственно под определением роута "@app.route('/products', methods=['GET'])" 
+# В нашем случае - get_products()
+# Так во фласке построена вся маршрутизация
 @app.route('/products', methods=['GET'])
 def get_products():
     # Получаем параметры запроса
+    # это именно GET-параметры - request.args.get(param name)
+    # как работать с POST описал в комментах в create_order()
     category_id = request.args.get('ctg_id')
     currency = request.args.get('curr', 'EUR')
     lang = request.args.get('lang', 'ua')
@@ -25,6 +32,7 @@ def get_products():
         lang = 'ua'
 
     try:
+        # Запрос к БД
         conn = get_db_connection()
         cur = conn.cursor()
 
@@ -42,17 +50,22 @@ def get_products():
             INNER JOIN price_list pl ON p.id = pl.product_id AND pl.currency_id = %s
             WHERE pn.lang_id = %s
         """
+        # Это параметризирванные запросы, защита от инъекций в SQL
+        # В тексте SQL ставишь параметры типа %s и кодом "params = [currency, lang]" запихиваешь их в список
         params = [currency, lang]
 
         if category_id:
             sql += " AND c.id = %s"
+            # И добавляешь в список параметров SQL-запроса
             params.append(category_id)
 
         sql += " ORDER BY c.name, p.id"
 
+        # При выполнении запроса либа проверит и подставит твои параметры запроса
         cur.execute(sql, params)
         rows = cur.fetchall()
 
+        # Запихиваем результаты запроса в выходной массив
         products = []
         for row in rows:
             products.append({
@@ -64,8 +77,17 @@ def get_products():
                 'currency_id': row[5]
             })
 
+        # Дисконнект к БД
         cur.close()
         conn.close()
+
+        # Из массивов python делает массив JSON
+        # Если тебе нужно отдать ответ в виде {...}, то перед jsonify() можешь запихать его в структуру типа 
+        # response = {
+        #     "result": "ok",
+        #     "products": products
+        # }
+        # return jsonify(response), 200
 
         if products:
             return jsonify(products), 200
@@ -75,28 +97,28 @@ def get_products():
     except Exception as e:
         return jsonify({"error": str(e)}), 500  # Ошибка сервера
 
-@app.route("/languages")
-def get_languages():
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT id, code, title FROM public.languages ORDER BY id;")
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-
-        data = [
-            {"id": row[0], "code": row[1].strip(), "title": row[2]}
-            for row in rows
-        ]
-        return jsonify(data), 200
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
 @app.route('/orders', methods=['POST'])
 def create_order():
-    data = request.get_json()  # Получаем JSON из тела запроса
+    # Для POST-запроса параметры извлекаются немного по другому
+    
+    # 1. Если прилетело из веб-формы из стандартного сайта, типа
+    # <form method="POST" action="/login">
+    #   <input name="username">
+    #   <input name="password">
+    # </form>
+    # то получаем их через методы типа username = request.form.get('username')
+
+    # 2. Если в теле запроса прислали JSON, как это делают в REST-запросах (это наш случай), типа
+    # Content-Type: application/json:    
+    # {
+    #   "username": "Doe",
+    #   "password": "secret"
+    # }
+    # , то используем data = request.get_json(), он отдает массив и обращается к нему дальше в коде 
+    # так - data['username']
+    # или так - data.get('username')
+
+    data = request.get_json()
     
     if not data or 'customer_id' not in data or 'items' not in data:
         return jsonify({"error": "Missing data"}), 400  # Проверка наличия данных
@@ -190,6 +212,25 @@ def get_orders():
             cursor.close()
             conn.close()
             return jsonify({"message": "No orders found"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/languages")
+def get_languages():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT id, code, title FROM public.languages ORDER BY id;")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        data = [
+            {"id": row[0], "code": row[1].strip(), "title": row[2]}
+            for row in rows
+        ]
+        return jsonify(data), 200
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
