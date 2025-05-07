@@ -1,21 +1,23 @@
 import os
-import psycopg2
+import psycopg2    # PostgreSQL
 from flask import Flask, jsonify, request
-from dotenv import load_dotenv
+from dotenv import load_dotenv    # Для загрузки переменных окружения из .env файла
 
+# Если приложение запущено локально, а не в Railway — загружаем переменные из .env
 if os.environ.get("RAILWAY_ENVIRONMENT") is None:
     load_dotenv()
 
 app = Flask(__name__)
 
 def get_db_connection():
-    db_url = os.getenv("DATABASE_URL")
+    db_url = os.getenv("DATABASE_URL")   # Читаем URL базы из переменной окружения
     if not db_url:
         raise RuntimeError("DATABASE_URL не задана.")
     return psycopg2.connect(db_url)
 
 @app.route('/products', methods=['GET'])
 def get_products():
+    # Получаем параметры запроса
     category_id = request.args.get('ctg_id')
     currency = request.args.get('curr', 'EUR')
     lang = request.args.get('lang', 'ua')
@@ -40,7 +42,6 @@ def get_products():
             INNER JOIN price_list pl ON p.id = pl.product_id AND pl.currency_id = %s
             WHERE pn.lang_id = %s
         """
-
         params = [currency, lang]
 
         if category_id:
@@ -72,7 +73,7 @@ def get_products():
             return jsonify({"message": "No products found"})
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}), 500  # Ошибка сервера
 
 @app.route("/languages")
 def get_languages():
@@ -95,21 +96,22 @@ def get_languages():
 
 @app.route('/orders', methods=['POST'])
 def create_order():
-    data = request.get_json()
+    data = request.get_json()  # Получаем JSON из тела запроса
     
     if not data or 'customer_id' not in data or 'items' not in data:
-        return jsonify({"error": "Missing data"}), 400
+        return jsonify({"error": "Missing data"}), 400  # Проверка наличия данных
     
     customer_id = data['customer_id']
     items = data['items']
 
     if not items or not isinstance(items, list):
-        return jsonify({"error": "Items list is required"}), 400
-    
+        return jsonify({"error": "Items list is required"}), 400  # Проверка структуры
+
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         
+        # Вставляем заказ и получаем его ID
         cursor.execute(
             "INSERT INTO orders (customer_id, invoice_date) VALUES (%s, CURRENT_TIMESTAMP) RETURNING order_id;",
             (customer_id,)
@@ -120,21 +122,21 @@ def create_order():
             product_id = item.get('product_id')
             quantity = item.get('quantity')
             price = item.get('price')
-            
+
             if not all([product_id, quantity, price]):
-                continue
+                continue  # Пропускаем неполные строки
 
             cursor.execute(
                 "INSERT INTO order_items (order_id, product_id, quantity, price) VALUES (%s, %s, %s, %s);",
                 (order_id, product_id, quantity, price)
             )
 
-        conn.commit()
+        conn.commit()  # Сохраняем изменения
         cursor.close()
         conn.close()
 
         return jsonify({"message": "Order created successfully", "order_id": order_id}), 201
-    
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -144,6 +146,7 @@ def get_orders():
         conn = get_db_connection()
         cursor = conn.cursor()
         
+        # Запрос с объединением заказов и их позиций
         cursor.execute("""
             SELECT o.order_id, o.customer_id, o.invoice_date, 
                    oi.order_item_id, oi.product_id, oi.quantity, oi.price,
@@ -152,9 +155,9 @@ def get_orders():
             LEFT JOIN order_items oi ON o.order_id = oi.order_id
             LEFT JOIN product_names pn ON oi.product_id = pn.product_id AND pn.lang_id = 'ua';
         """)
-        
+
         orders = cursor.fetchall()
-        
+
         if orders:
             orders_list = []
             current_order = None
@@ -170,7 +173,7 @@ def get_orders():
                         "items": []
                     }
                     current_order = order_id
-                
+
                 current_order_data["items"].append({
                     "order_item_id": order_item_id,
                     "product_id": product_id,
@@ -178,7 +181,7 @@ def get_orders():
                     "quantity": quantity,
                     "price": price
                 })
-            
+
             orders_list.append(current_order_data)
             cursor.close()
             conn.close()
@@ -190,5 +193,24 @@ def get_orders():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# Запуск приложения (локально или на хостинге)
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))  # Слушаем все IP, порт по умолчанию — 5000
+
+# Дополнительные файлы в проекте:
+
+# Procfile
+# Назначение: указывает, как запускать приложение на платформе вроде Railway, Heroku и др.
+# Говорит системе развертывания: «Это веб-приложение, запускай его через python app.py».
+# Ключевое слово web указывает, что это веб-сервис, который слушает HTTP-запросы.
+
+# requirements.txt
+# Назначение: список всех Python-зависимостей, нужных для запуска проекта.
+# Командой pip install -r requirements.txt устанавливаются все библиотеки.
+# Railway автоматически выполняет эту установку при развёртывании.
+
+# .env
+# Назначение: содержит секретные и конфигурационные переменные окружения, которые не должны попадать в публичный код.
+# Используется библиотекой python-dotenv для подгрузки переменных в локальной среде.
+# Позволяет удобно менять настройки (например, адрес БД) без правки кода.
+# Важно: .env добавляют в .gitignore, чтобы не загрузить секреты в публичный репозиторий.
