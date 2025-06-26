@@ -1,6 +1,9 @@
 import os
 import psycopg2    # PostgreSQL
+import secrets
+import time
 from flask import Flask, jsonify, request
+from functools import wraps
 from dotenv import load_dotenv    # Для загрузки переменных окружения из .env файла
 
 # Если приложение запущено локально, а не в Railway — загружаем переменные из .env
@@ -8,6 +11,49 @@ if os.environ.get("RAILWAY_ENVIRONMENT") is None:
     load_dotenv()
 
 app = Flask(__name__)
+
+# 🔐 Простая база пользователей и токены
+USERS = {"admin": "1234"}
+TOKENS = {}  # token -> (username, expiry)
+TOKEN_TTL = 300  # 5 минут
+
+# 🔐 Декоратор авторизации
+def require_auth(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth = request.headers.get('Authorization', '')
+        if not auth.startswith('Bearer '):
+            return jsonify({"error": "Authorization header missing"}), 401
+
+        token = auth.split(' ')[1]
+        user_data = TOKENS.get(token)
+
+        if not user_data:
+            return jsonify({"error": "Invalid or expired token"}), 401
+
+        username, expiry = user_data
+        if time.time() > expiry:
+            del TOKENS[token]
+            return jsonify({"error": "Token expired"}), 401
+
+        request.user = username
+        return f(*args, **kwargs)
+    return decorated
+
+# 🔐 Точка входа для получения токена
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.json
+    username = data.get("username")
+    password = data.get("password")
+
+    if USERS.get(username) != password:
+        return jsonify({"error": "Invalid credentials"}), 401
+
+    token = secrets.token_hex(16)
+    TOKENS[token] = (username, time.time() + TOKEN_TTL)
+
+    return jsonify({"token": token})
 
 # функция коннекта в БД, вызывается из каждого роута, где надо обращаться к базе
 def get_db_connection():
@@ -21,6 +67,7 @@ def get_db_connection():
 # В нашем случае - get_products()
 # Так во фласке построена вся маршрутизация
 @app.route('/products', methods=['GET'])
+@require_auth
 def get_products():
     # Получаем параметры запроса
     # это именно GET-параметры - request.args.get(param name)
@@ -98,9 +145,10 @@ def get_products():
         return jsonify({"error": str(e)}), 500  # Ошибка сервера
 
 @app.route('/orders', methods=['POST'])
+@require_auth
 def create_order():
     # Для POST-запроса параметры извлекаются немного по другому
-    
+
     # 1. Если прилетело из веб-формы из стандартного сайта, типа
     # <form method="POST" action="/login">
     #   <input name="username">
@@ -122,7 +170,7 @@ def create_order():
     
     if not data or 'customer_id' not in data or 'items' not in data:
         return jsonify({"error": "Missing data"}), 400  # Проверка наличия данных
-    
+
     customer_id = data['customer_id']
     items = data['items']
 
@@ -163,6 +211,7 @@ def create_order():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/orders', methods=['GET'])
+@require_auth
 def get_orders():
     try:
         conn = get_db_connection()
@@ -216,6 +265,7 @@ def get_orders():
         return jsonify({"error": str(e)}), 500
 
 @app.route("/languages")
+@require_auth
 def get_languages():
     try:
         conn = get_db_connection()
